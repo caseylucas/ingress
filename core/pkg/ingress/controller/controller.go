@@ -54,6 +54,7 @@ import (
 	"k8s.io/ingress/core/pkg/net/ssl"
 	local_strings "k8s.io/ingress/core/pkg/strings"
 	"k8s.io/ingress/core/pkg/task"
+	"k8s.io/apimachinery/pkg/util/runtime"
 )
 
 const (
@@ -222,9 +223,11 @@ func newIngressController(config *Configuration) *GenericController {
 			if found {
 				return
 			}
+			glog.V(2).Infof("KC: in AddFunc: Enqueueing obj: %v", obj)
 			ic.syncQueue.Enqueue(obj)
 		},
 		DeleteFunc: func(obj interface{}) {
+			glog.V(2).Infof("KC: in DeleteFunc: obj: %v", obj)
 			ic.syncQueue.Enqueue(obj)
 		},
 		UpdateFunc: func(old, cur interface{}) {
@@ -235,6 +238,9 @@ func newIngressController(config *Configuration) *GenericController {
 					return
 				}
 
+				glog.V(2).Info("KC: in UpdateFunc: Enqueueing cur")
+				glog.V(2).Infof("KC: in UpdateFunc: old: %v", old)
+				glog.V(2).Infof("KC: in UpdateFunc: cur: %v", cur)
 				ic.syncQueue.Enqueue(cur)
 			}
 		},
@@ -322,15 +328,6 @@ func newIngressController(config *Configuration) *GenericController {
 	return &ic
 }
 
-func (ic *GenericController) controllersInSync() bool {
-	return ic.ingController.HasSynced() &&
-		ic.svcController.HasSynced() &&
-		ic.endpController.HasSynced() &&
-		ic.secrController.HasSynced() &&
-		ic.mapController.HasSynced() &&
-		ic.nodeController.HasSynced()
-}
-
 // Info returns information about the backend
 func (ic GenericController) Info() *ingress.BackendInfo {
 	return ic.cfg.Backend.Info()
@@ -373,18 +370,18 @@ func (ic *GenericController) getConfigMap(ns, name string) (*api.ConfigMap, erro
 // then sends the content to the backend (OnUpdate) receiving the populated
 // template as response reloading the backend if is required.
 func (ic *GenericController) syncIngress(key interface{}) error {
+	glog.V(2).Infof("KC: in syncIngress: key: %v, entry", key)
 	ic.syncRateLimiter.Accept()
+	glog.V(2).Infof("KC: in syncIngress: key: %v, passed rate limiter", key) // todo: saw this
 
 	if ic.syncQueue.IsShuttingDown() {
+		glog.V(2).Infof("KC: in syncIngress: IsShuttingDown") // todo didn't see this
 		return nil
 	}
 
-	if !ic.controllersInSync() {
-		time.Sleep(podStoreSyncedPollPeriod)
-		return fmt.Errorf("deferring sync till endpoints controller has synced")
-	}
-
+	glog.V(2).Infof("KC: in syncIngress: key: %v, calling getBackendServers", key) // todo: didn't see this
 	upstreams, servers := ic.getBackendServers()
+	glog.V(2).Infof("KC: in syncIngress: key: %v, returned from getBackendServers", key)
 	var passUpstreams []*ingress.SSLPassthroughBackend
 	for _, server := range servers {
 		if !server.SSLPassthrough {
@@ -405,7 +402,15 @@ func (ic *GenericController) syncIngress(key interface{}) error {
 			break
 		}
 	}
-
+	// glog.V(2).Infof("KC: in OnUpdate: writing template. backends, len: %d...", len(ingressCfg.Backends))
+	glog.V(2).Infof("KC: in syncIngr: upstreams, len: %d...", len(upstreams))
+	for usIndex, us := range upstreams {
+		glog.V(2).Infof("KC: in syncIngr: %2d, name: %-45s, port: %4d, ep: %#v", usIndex, us.Name, us.Port.IntValue(), us.Endpoints)
+	}
+	glog.V(2).Infof("KC: in syncIngr: servers, len: %d...", len(servers))
+	//for sIndex, s := range servers {
+	//	glog.V(2).Infof("KC: in syncIngress: server: %d, %#v", sIndex, *s)
+	//}
 	data, err := ic.cfg.Backend.OnUpdate(ingress.Configuration{
 		Backends:            upstreams,
 		Servers:             servers,
@@ -414,9 +419,11 @@ func (ic *GenericController) syncIngress(key interface{}) error {
 		PassthroughBackends: passUpstreams,
 	})
 	if err != nil {
+		glog.V(2).Infof("KC: in syncIngress: error from OnUpdate: %v", err)
 		return err
 	}
 
+	glog.V(2).Info("KC: in syncIngress: calling Reload")
 	out, reloaded, err := ic.cfg.Backend.Reload(data)
 	if err != nil {
 		incReloadErrorCount()
@@ -584,8 +591,11 @@ func (ic *GenericController) getBackendServers() ([]*ingress.Backend, []*ingress
 	ings := ic.ingLister.Store.List()
 	sort.Sort(ingressByRevision(ings))
 
+	glog.V(2).Infof("KC: in getBackendServers: len(ings): %d", len(ings))
 	upstreams := ic.createUpstreams(ings)
+	glog.V(2).Infof("KC: in getBackendServers: len(upstreams): %d", len(upstreams))
 	servers := ic.createServers(ings, upstreams)
+	glog.V(2).Infof("KC: in getBackendServers: len(servers): %d", len(servers))
 
 	for _, ingIf := range ings {
 		ing := ingIf.(*extensions.Ingress)
@@ -608,7 +618,7 @@ func (ic *GenericController) getBackendServers() ([]*ingress.Backend, []*ingress
 
 			if rule.HTTP == nil &&
 				host != defServerName {
-				glog.V(3).Infof("ingress rule %v/%v does not contain HTTP rules, using default backend", ing.Namespace, ing.Name)
+				glog.V(2).Infof("ingress rule %v/%v does not contain HTTP rules, using default backend", ing.Namespace, ing.Name)
 				continue
 			}
 
@@ -632,11 +642,11 @@ func (ic *GenericController) getBackendServers() ([]*ingress.Backend, []*ingress
 						addLoc = false
 
 						if !loc.IsDefBackend {
-							glog.V(3).Infof("avoiding replacement of ingress rule %v/%v location %v upstream %v (%v)", ing.Namespace, ing.Name, loc.Path, ups.Name, loc.Backend)
+							glog.V(2).Infof("avoiding replacement of ingress rule %v/%v location %v upstream %v (%v)", ing.Namespace, ing.Name, loc.Path, ups.Name, loc.Backend)
 							break
 						}
 
-						glog.V(3).Infof("replacing ingress rule %v/%v location %v upstream %v (%v)", ing.Namespace, ing.Name, loc.Path, ups.Name, loc.Backend)
+						glog.V(2).Infof("replacing ingress rule %v/%v location %v upstream %v (%v)", ing.Namespace, ing.Name, loc.Path, ups.Name, loc.Backend)
 						loc.Backend = ups.Name
 						loc.IsDefBackend = false
 						loc.Backend = ups.Name
@@ -648,7 +658,7 @@ func (ic *GenericController) getBackendServers() ([]*ingress.Backend, []*ingress
 				}
 				// is a new location
 				if addLoc {
-					glog.V(3).Infof("adding location %v in ingress rule %v/%v upstream %v", nginxPath, ing.Namespace, ing.Name, ups.Name)
+					glog.V(2).Infof("adding location %v in ingress rule %v/%v upstream %v", nginxPath, ing.Namespace, ing.Name, ups.Name)
 					loc := &ingress.Location{
 						Path:         nginxPath,
 						Backend:      ups.Name,
@@ -664,6 +674,7 @@ func (ic *GenericController) getBackendServers() ([]*ingress.Backend, []*ingress
 	}
 
 	// Configure Backends[].SSLPassthrough
+	glog.V(2).Info("KC: in getBackendServers: checking SSLPassthrough")
 	for _, upstream := range upstreams {
 		isHTTPSfrom := []*ingress.Server{}
 		for _, server := range servers {
@@ -694,7 +705,7 @@ func (ic *GenericController) getBackendServers() ([]*ingress.Backend, []*ingress
 	aUpstreams := make([]*ingress.Backend, 0, len(upstreams))
 	for _, value := range upstreams {
 		if len(value.Endpoints) == 0 {
-			glog.V(3).Infof("upstream %v does not have any active endpoints. Using default backend", value.Name)
+			glog.V(2).Infof("upstream %v does not have any active endpoints. Using default backend", value.Name)
 			value.Endpoints = append(value.Endpoints, newDefaultServer())
 		}
 		aUpstreams = append(aUpstreams, value)
@@ -708,6 +719,7 @@ func (ic *GenericController) getBackendServers() ([]*ingress.Backend, []*ingress
 	}
 	sort.Sort(ingress.ServerByName(aServers))
 
+	glog.V(2).Infof("KC: in getBackendServers: returning len(aUpstreams): %d, len(aServers): %d", len(aUpstreams), len(aServers))
 	return aUpstreams, aServers
 }
 
@@ -827,6 +839,7 @@ func (ic *GenericController) createUpstreams(data []interface{}) map[string]*ing
 // to a service.
 func (ic *GenericController) serviceEndpoints(svcKey, backendPort string,
 	hz *healthcheck.Upstream) ([]ingress.Endpoint, error) {
+	// casey: possibly stale?
 	svcObj, svcExists, err := ic.svcLister.Store.GetByKey(svcKey)
 
 	var upstreams []ingress.Endpoint
@@ -1059,12 +1072,14 @@ func (ic *GenericController) getEndpoints(
 		})
 	}
 
-	glog.V(3).Infof("getting endpoints for service %v/%v and port %v", s.Namespace, s.Name, servicePort.String())
+//	glog.V(3).Infof("getting endpoints for service %v/%v and port %v", s.Namespace, s.Name, servicePort.String())
+	glog.V(2).Infof("KC: in getEndpoints: getting endpoints for service %v/%v and port %v", s.Namespace, s.Name, servicePort.String())
 	ep, err := ic.endpLister.GetServiceEndpoints(s)
 	if err != nil {
 		glog.Warningf("unexpected error obtaining service endpoints: %v", err)
 		return upsServers
 	}
+	glog.V(2).Infof("KC: in getEndpoints: len(ep.Subsets): %d", len(ep.Subsets))
 
 	for _, ss := range ep.Subsets {
 		for _, epPort := range ss.Ports {
@@ -1108,7 +1123,8 @@ func (ic *GenericController) getEndpoints(
 		}
 	}
 
-	glog.V(3).Infof("endpoints found: %v", upsServers)
+//	glog.V(3).Infof("endpoints found: %v", upsServers)
+	glog.V(2).Infof("KC: in getEndpoints: endpoints found: %v", upsServers)
 	return upsServers
 }
 
@@ -1166,6 +1182,18 @@ func (ic GenericController) Start() {
 	go ic.nodeController.Run(ic.stopCh)
 	go ic.secrController.Run(ic.stopCh)
 	go ic.mapController.Run(ic.stopCh)
+
+	// Wait for all involved caches to be synced, before processing items from the queue is started
+	if !cache.WaitForCacheSync(ic.stopCh,
+		ic.ingController.HasSynced,
+		ic.svcController.HasSynced,
+		ic.endpController.HasSynced,
+		ic.secrController.HasSynced,
+		ic.mapController.HasSynced,
+		ic.nodeController.HasSynced,
+	) {
+		runtime.HandleError(fmt.Errorf("Timed out waiting for caches to sync"))
+	}
 
 	go ic.syncQueue.Run(10*time.Second, ic.stopCh)
 

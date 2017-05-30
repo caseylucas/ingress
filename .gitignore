@@ -22,3 +22,7 @@ Session.vim
 # coverage artifacts
 .coverprofile
 /gover.coverprofile
+
+# intellij idea files
+.idea/**
+*.iml

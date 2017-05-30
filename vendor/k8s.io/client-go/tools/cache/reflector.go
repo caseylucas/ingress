@@ -233,7 +233,7 @@ func (r *Reflector) resyncChan() (<-chan time.Time, func() bool) {
 // and then use the resource version to watch.
 // It returns error if ListAndWatch didn't even try to initialize watch.
 func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
-	glog.V(3).Infof("Listing and watching %v from %s", r.expectedType, r.name)
+	glog.V(2).Infof("KC: Listing and watching %v from %s", r.expectedType, r.name)
 	var resourceVersion string
 	resyncCh, cleanup := r.resyncChan()
 	defer cleanup()
@@ -273,7 +273,7 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 				return
 			}
 			if r.ShouldResync == nil || r.ShouldResync() {
-				glog.V(4).Infof("%s: forcing resync", r.name)
+				glog.V(2).Infof("KC: %s: forcing resync", r.name)
 				if err := r.store.Resync(); err != nil {
 					resyncerrc <- err
 					return

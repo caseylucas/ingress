@@ -238,17 +238,21 @@ func (n *NGINXController) start(cmd *exec.Cmd, done chan error) {
 // Reload checks if the running configuration file is different
 // to the specified and reload nginx if required
 func (n NGINXController) Reload(data []byte) ([]byte, bool, error) {
+	glog.V(2).Info("KC: in Reload")
 	if !n.isReloadRequired(data) {
+		glog.V(2).Info("KC: in Reload: reload not required")
 		return []byte("Reload not required"), false, nil
 	}
 
 	err := ioutil.WriteFile(cfgPath, data, 0644)
 	if err != nil {
+		glog.V(2).Info("KC: in Reload: err from WriteFile: %v", err)
 		return nil, false, err
 	}
 
 	o, e := exec.Command(n.binary, "-s", "reload", "-c", cfgPath).CombinedOutput()
 
+	glog.V(2).Info("KC: in Reload: returning true")
 	return o, true, e
 }
 
@@ -526,6 +530,10 @@ func (n *NGINXController) OnUpdate(ingressCfg ingress.Configuration) ([]byte, er
 
 	cfg.SSLDHParam = sslDHParam
 
+	glog.V(2).Infof("KC: in OnUpdate: writing template. backends, len: %d...", len(ingressCfg.Backends))
+	for bIndex, be := range ingressCfg.Backends {
+		glog.V(2).Infof("KC: in OnUpdate: %2d, name: %-45s, port: %4d, ep: %#v", bIndex, be.Name, be.Port.IntValue(), be.Endpoints)
+	}
 	content, err := n.t.Write(config.TemplateConfig{
 		ProxySetHeaders:     setHeaders,
 		MaxOpenFiles:        maxOpenFiles,
@@ -541,10 +549,12 @@ func (n *NGINXController) OnUpdate(ingressCfg ingress.Configuration) ([]byte, er
 		IsIPV6Enabled:       n.isIPV6Enabled && !cfg.DisableIpv6,
 	})
 	if err != nil {
+		glog.V(2).Infof("KC: in OnUpdate: error writing template:  %v", err)
 		return nil, err
 	}
 
 	if err := n.testTemplate(content); err != nil {
+		glog.V(2).Infof("KC: in OnUpdate: error testing template:  %v", err)
 		return nil, err
 	}
 

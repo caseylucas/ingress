@@ -147,6 +147,8 @@ func NewIngressController(backend ingress.Controller) *GenericController {
 		glog.Errorf("Failed to mkdir SSL directory: %v", err)
 	}
 
+	glog.V(2).Infof("KC: in NewIngressController resyncPeriod: %v", *resyncPeriod)
+
 	config := &Configuration{
 		UpdateStatus:            *updateStatus,
 		ElectionID:              *electionID,
